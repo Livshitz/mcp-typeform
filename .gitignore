@@ -5,4 +5,7 @@ node_modules/
 service-account*.json
 *.log
 .tmp/
+
+reports/*.json
+reports/*.csv
 .mcp-typeform/
