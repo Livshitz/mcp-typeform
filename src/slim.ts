@@ -15,15 +15,18 @@ export function slimForms(data: { items?: Rec[]; total_items?: number; page_coun
 }
 
 export function slimResponse(r: Rec) {
+  const answers = (r.answers as Rec[] | undefined)
+    ?.filter((a): a is Rec => a != null && typeof a === 'object')
+    .map((a) => ({
+      field: { id: (a.field as Rec)?.id, ref: (a.field as Rec)?.ref, type: (a.field as Rec)?.type },
+      type: a.type,
+      [String(a.type)]: a[String(a.type)],
+    }));
   return {
     response_id: r.response_id,
     submitted_at: r.submitted_at,
     landed_at: r.landed_at,
-    answers: (r.answers as Rec[] | undefined)?.map((a) => ({
-      field: { id: (a.field as Rec)?.id, ref: (a.field as Rec)?.ref, type: (a.field as Rec)?.type },
-      type: a.type,
-      [String(a.type)]: a[String(a.type)],
-    })),
+    answers,
   };
 }
 

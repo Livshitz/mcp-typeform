@@ -20,6 +20,18 @@ function qp(req: { url: string; query?: Record<string, unknown> }, key: string):
   try { return new URL(req.url, 'http://_').searchParams.get(key) ?? undefined; } catch { return undefined; }
 }
 
+function qpForward(
+  req: { url: string; query?: Record<string, unknown> },
+  keys: readonly string[],
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of keys) {
+    const v = qp(req, k);
+    if (v) out[k] = v;
+  }
+  return out;
+}
+
 function params(req: unknown): Record<string, string> {
   return ((req as { params?: Record<string, string> })?.params) ?? {};
 }
@@ -39,6 +51,9 @@ export function createTypeformMcp() {
       page: { description: 'Page number (default 1)', type: 'string' },
       page_size: { description: 'Items per page (default 10, max 200)', type: 'string' },
       search: { description: 'Search by title', type: 'string' },
+      workspace_id: { description: 'Limit to workspace UUID', type: 'string' },
+      sort_by: { description: 'Sort field: created_at | last_updated_at', type: 'string' },
+      order_by: { description: 'Order: asc | desc', type: 'string' },
       full: { description: 'If true, return full form objects', type: 'string' },
     },
     annotations: { readOnlyHint: true },
@@ -50,8 +65,9 @@ export function createTypeformMcp() {
       const page_size = Math.min(200, parseInt(qp(req, 'page_size') ?? '10', 10) || 10);
       const search = qp(req, 'search');
       const full = qp(req, 'full') === 'true';
+      const fwd = qpForward(req, ['workspace_id', 'sort_by', 'order_by']);
       const data = await typeformApi<{ items?: Rec[]; total_items?: number; page_count?: number }>(
-        token, '/forms', { params: { page, page_size, ...(search ? { search } : {}) } },
+        token, '/forms', { params: { page, page_size, ...(search ? { search } : {}), ...fwd } },
       );
       return json(full ? data : slimForms(data));
     } catch (e) { return json({ ok: false, error: errMessage(e) }, { status: errStatus(e) }); }
@@ -75,15 +91,33 @@ export function createTypeformMcp() {
 
   // --- List responses ---
   base.describeMCP('/typeform/forms/:id/responses', 'GET', {
-    description: 'List responses for a form. Supports pagination and date filtering.',
+    description:
+      'List responses for a form. Pagination: before/after cursors OR sort — do not combine sort with before/after (Typeform). Prefer response_type over deprecated completed.',
     params: {
       id: { description: 'Form ID', type: 'string', required: true },
       page_size: { description: 'Max responses (default 25, max 1000)', type: 'string' },
       before: { description: 'Cursor: fetch responses before this token', type: 'string' },
       after: { description: 'Cursor: fetch responses after this token', type: 'string' },
-      since: { description: 'Filter: submitted_at >= ISO8601 date', type: 'string' },
-      until: { description: 'Filter: submitted_at <= ISO8601 date', type: 'string' },
-      completed: { description: 'Filter by completion: true | false', type: 'string' },
+      since: {
+        description: 'ISO8601 lower bound — which timestamp applies depends on response_type / completed (see Typeform docs)',
+        type: 'string',
+      },
+      until: {
+        description: 'ISO8601 upper bound — which timestamp applies depends on response_type / completed (see Typeform docs)',
+        type: 'string',
+      },
+      completed: { description: '[Deprecated API] completion filter; prefer response_type', type: 'string' },
+      response_type: {
+        description:
+          'Comma-separated: started | partial | completed (Typeform replaces completed); changes which timestamp since/until apply to.',
+        type: 'string',
+      },
+      sort: { description: 'Order: field,direction e.g. submitted_at,desc — cannot combine with before/after', type: 'string' },
+      query: { description: 'Substring match across answers, hidden fields, variables', type: 'string' },
+      fields: { description: 'Comma-separated field refs to include in answers projection', type: 'string' },
+      answered_fields: { description: 'Comma-separated refs; only responses mentioning at least one', type: 'string' },
+      excluded_response_ids: { description: 'Comma-separated response IDs to omit', type: 'string' },
+      included_response_ids: { description: 'Comma-separated response IDs whitelist', type: 'string' },
       full: { description: 'If true, return raw response objects', type: 'string' },
     },
     annotations: { readOnlyHint: true },
@@ -95,12 +129,33 @@ export function createTypeformMcp() {
       if (!id) return json({ ok: false, error: 'id required' }, { status: 400 });
       const page_size = Math.min(1000, parseInt(qp(req, 'page_size') ?? '25', 10) || 25);
       const full = qp(req, 'full') === 'true';
-      const params: Record<string, string | number | undefined> = { page_size };
-      for (const k of ['before', 'after', 'since', 'until', 'completed']) {
-        const v = qp(req, k); if (v) params[k] = v;
+      const sort = qp(req, 'sort');
+      if (sort && (qp(req, 'before') || qp(req, 'after'))) {
+        return json(
+          {
+            ok: false,
+            error: 'Cannot use sort together with before or after (Typeform Responses API)',
+          },
+          { status: 400 },
+        );
       }
+      const fwd = qpForward(req, [
+        'before',
+        'after',
+        'since',
+        'until',
+        'completed',
+        'response_type',
+        'sort',
+        'query',
+        'fields',
+        'answered_fields',
+        'excluded_response_ids',
+        'included_response_ids',
+      ]);
+      const responseParams = { page_size, ...fwd };
       const data = await typeformApi<{ items?: Rec[]; total_items?: number; page_count?: number }>(
-        token, `/forms/${id}/responses`, { params },
+        token, `/forms/${id}/responses`, { params: responseParams },
       );
       return json(full ? data : slimResponses(data));
     } catch (e) { return json({ ok: false, error: errMessage(e) }, { status: errStatus(e) }); }
@@ -210,9 +265,9 @@ export function createTypeformMcp() {
 
   const mcp = base.asMCP({
     name: 'mcp-typeform',
-    version: '0.1.0',
+    version: '0.2.0',
     instructions:
-      'Typeform: list forms to get IDs, then fetch responses or insights. Responses are paginated — use before/after cursors. Webhook tag is a unique slug you assign. Full workflow docs: MCP resource skill://mcp-typeform/workflow.',
+      'Typeform: list forms (optional workspace_id, sort_by, order_by; full=true for settings.is_public). Responses: pagination via before/after; never mix sort with before/after; use response_type and since/until; total_items reflects filters. Recent submissions may lag ~30min — use webhooks for realtime. Webhook tag is a unique slug. Docs: skill://mcp-typeform/workflow.',
   });
 
   augmentMcpWithSkillResource(mcp, {
