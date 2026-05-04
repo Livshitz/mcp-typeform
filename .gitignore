@@ -5,3 +5,4 @@ node_modules/
 service-account*.json
 *.log
 .tmp/
+.mcp-typeform/

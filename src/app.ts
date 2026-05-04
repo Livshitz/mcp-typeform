@@ -4,6 +4,7 @@ import { RouterWrapper } from 'edge.libx.js/build/main.js';
 import { augmentMcpWithSkillResource } from './mcp/with-skill-resource.ts';
 import { requireToken, typeformApi } from './typeform-api.ts';
 import { slimForms, slimResponse, slimResponses } from './slim.ts';
+import { FileCache } from './file-cache.ts';
 
 type Rec = Record<string, unknown>;
 
@@ -37,6 +38,7 @@ function params(req: unknown): Record<string, string> {
 }
 
 export function createTypeformMcp() {
+  const cache = new FileCache();
   const base = RouterWrapper.getNew('', {
     origin: '*',
     allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
@@ -157,7 +159,10 @@ export function createTypeformMcp() {
       const data = await typeformApi<{ items?: Rec[]; total_items?: number; page_count?: number }>(
         token, `/forms/${id}/responses`, { params: responseParams },
       );
-      return json(full ? data : slimResponses(data));
+      if (full) return json(data);
+      const slim = slimResponses(data);
+      const summary = cache.write(`responses_${id}`, slim);
+      return json({ total_items: slim.total_items, page_count: slim.page_count, ...summary });
     } catch (e) { return json({ ok: false, error: errMessage(e) }, { status: errStatus(e) }); }
   });
 
@@ -181,7 +186,9 @@ export function createTypeformMcp() {
       );
       const item = data.items?.[0];
       if (!item) return json({ ok: false, error: 'response not found' }, { status: 404 });
-      return json(slimResponse(item));
+      const slim = slimResponse(item);
+      const summary = cache.write(`response_${id}_${rid}`, slim);
+      return json({ response_id: slim.response_id, ...summary });
     } catch (e) { return json({ ok: false, error: errMessage(e) }, { status: errStatus(e) }); }
   });
 
@@ -267,7 +274,7 @@ export function createTypeformMcp() {
     name: 'mcp-typeform',
     version: '0.2.0',
     instructions:
-      'Typeform: list forms (optional workspace_id, sort_by, order_by; full=true for settings.is_public). Responses: pagination via before/after; never mix sort with before/after; use response_type and since/until; total_items reflects filters. Recent submissions may lag ~30min — use webhooks for realtime. Webhook tag is a unique slug. Docs: skill://mcp-typeform/workflow.',
+      'Typeform: list forms (optional workspace_id, sort_by, order_by; full=true for settings.is_public). Responses: cached to disk by default — tool returns { file, total_items, preview }; use Read on the file path for full data; pass full=true for inline JSON. Pagination via before/after; never mix sort with before/after; use response_type and since/until; total_items reflects filters. Recent submissions may lag ~30min — use webhooks for realtime. Webhook tag is a unique slug. Docs: skill://mcp-typeform/workflow.',
   });
 
   augmentMcpWithSkillResource(mcp, {

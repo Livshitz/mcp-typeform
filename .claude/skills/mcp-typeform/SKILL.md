@@ -3,6 +3,9 @@
 ## Auth
 Set `TYPEFORM_PERSONAL_TOKEN` env var (Personal Access Token from typeform.com/developers).
 
+## Response Caching
+Response endpoints write results to `.mcp-typeform/cache/` and return a summary (file path, total_items, preview) instead of full payloads. Use `Read` on the returned `file` path to access full data. Pass `full=true` to bypass caching and get inline JSON.
+
 ## Tool Reference
 
 | Tool | When to use |
